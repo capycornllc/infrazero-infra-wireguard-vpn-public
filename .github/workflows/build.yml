@@ -1,0 +1,155 @@
+name: build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.S3_REGION }}
+      S3_REGION: ${{ secrets.S3_REGION }}
+      S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+      INFRA_STATE_BUCKET: ${{ secrets.INFRA_STATE_BUCKET }}
+      HCLOUD_TOKEN: ${{ secrets.HETZNER_CLOUD_TOKEN }}
+      TF_VAR_hcloud_token: ${{ secrets.HETZNER_CLOUD_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VPN_PROJECT_SLUG: ${{ secrets.VPN_PROJECT_SLUG }}
+      VPN_ENVIRONMENT: ${{ secrets.VPN_ENVIRONMENT }}
+      VPN_CLOUD_PROVIDER: ${{ secrets.VPN_CLOUD_PROVIDER }}
+      VPN_CLOUD_REGION: ${{ secrets.VPN_CLOUD_REGION }}
+      VPN_EGRESS_SERVER_TYPE: ${{ secrets.VPN_EGRESS_SERVER_TYPE }}
+      VPN_ENDPOINT_MODE: ${{ secrets.VPN_ENDPOINT_MODE }}
+      VPN_DOMAIN: ${{ secrets.VPN_DOMAIN }}
+      VPN_ROUTING_MODE: ${{ secrets.VPN_ROUTING_MODE }}
+      VPN_SPLIT_ALLOWED_IPS: ${{ secrets.VPN_SPLIT_ALLOWED_IPS }}
+      VPN_CLIENT_DNS: ${{ secrets.VPN_CLIENT_DNS }}
+      WG_LISTEN_PORT: ${{ secrets.WG_LISTEN_PORT }}
+      WG_SERVER_ADDRESS: ${{ secrets.WG_SERVER_ADDRESS }}
+      WG_SERVER_PRIVATE_KEY: ${{ secrets.WG_SERVER_PRIVATE_KEY }}
+      WG_SERVER_PUBLIC_KEY: ${{ secrets.WG_SERVER_PUBLIC_KEY }}
+      VPN_PEERS_JSON: ${{ secrets.VPN_PEERS_JSON }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Normalize deploy environment
+        run: |
+          set -euo pipefail
+          if [ -z "${VPN_PROJECT_SLUG:-}" ]; then
+            echo "VPN_PROJECT_SLUG is required" >&2
+            exit 1
+          fi
+          if [ -z "${VPN_ENVIRONMENT:-}" ]; then
+            echo "VPN_ENVIRONMENT=prod" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${VPN_CLOUD_REGION:-}" ]; then
+            echo "VPN_CLOUD_REGION is required" >&2
+            exit 1
+          fi
+          if [ -z "${S3_ENDPOINT:-}" ]; then
+            echo "S3_ENDPOINT is required" >&2
+            exit 1
+          fi
+          if [[ "${S3_ENDPOINT}" != http://* && "${S3_ENDPOINT}" != https://* ]]; then
+            echo "S3_ENDPOINT=https://${S3_ENDPOINT}" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${S3_REGION:-}" ]; then
+            echo "S3_REGION=${VPN_CLOUD_REGION}" >> "$GITHUB_ENV"
+            echo "AWS_DEFAULT_REGION=${VPN_CLOUD_REGION}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Render backend
+        run: python scripts/common/render-backend.py --output tofu/hetzner/backend.hcl
+
+      - name: Init OpenTofu
+        run: tofu -chdir=tofu/hetzner init -no-color -backend-config=backend.hcl
+
+      - name: Package and upload egress bootstrap
+        run: |
+          set -euo pipefail
+          mkdir -p build/bootstrap
+          chmod +x bootstrap/hetzner/*.sh
+          tar --zstd -cf build/bootstrap/egress-vpn.tar.zst -C bootstrap/hetzner common.sh egress-vpn.sh
+          sha=$(sha256sum build/bootstrap/egress-vpn.tar.zst | awk '{print $1}')
+          aws --endpoint-url "$S3_ENDPOINT" s3 cp build/bootstrap/egress-vpn.tar.zst "s3://$INFRA_STATE_BUCKET/bootstrap/egress-vpn.tar.zst"
+          url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/bootstrap/egress-vpn.tar.zst" --expires-in 3600)
+          jq -n --arg url "$url" --arg sha "$sha" '{ "egress-vpn": { "url": $url, "sha256": $sha } }' > build/bootstrap_artifacts.json
+
+      - name: Render OpenTofu tfvars
+        run: python scripts/common/render-vpn-tfvars.py --bootstrap-manifest build/bootstrap_artifacts.json --output tofu/hetzner/tofu.tfvars.json
+
+      - name: Destroy previous VPN egress
+        run: tofu -chdir=tofu/hetzner destroy -no-color -auto-approve -var-file=tofu.tfvars.json
+
+      - name: Apply VPN egress
+        run: tofu -chdir=tofu/hetzner apply -no-color -auto-approve -var-file=tofu.tfvars.json
+
+      - name: Sync Cloudflare DNS
+        if: env.VPN_ENDPOINT_MODE == 'domain'
+        run: |
+          set -euo pipefail
+          egress_ip=$(tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4)
+          python scripts/common/sync-cloudflare-dns.py --hostname "$VPN_DOMAIN" --ip "$egress_ip"
+
+      - name: Write deploy outputs
+        if: success()
+        run: |
+          set -euo pipefail
+          egress_ip=$(tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4)
+          public_ip_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_public_ip_endpoint)
+          wireguard_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_endpoint)
+          domain_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_domain_endpoint 2>/dev/null || true)
+          python scripts/common/render-deploy-output.py \
+            --egress-public-ip "$egress_ip" \
+            --public-ip-endpoint "$public_ip_endpoint" \
+            --wireguard-endpoint "$wireguard_endpoint" \
+            --domain-endpoint "$domain_endpoint" \
+            --output build/deploy/vpn-deploy-output.json
+          cat build/deploy/vpn-deploy-output.json
+
+      - name: Upload deploy output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpn-deploy-output
+          path: build/deploy/vpn-deploy-output.json
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "## Infrazero WireGuard VPN"
+            echo ""
+            if tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then
+              ip=$(cat /tmp/egress_ip)
+              echo "- Egress public IPv4: \`$ip\`"
+            fi
+            if tofu -chdir=tofu/hetzner output -no-color -raw wireguard_endpoint >/tmp/wireguard_endpoint 2>/dev/null; then
+              endpoint=$(cat /tmp/wireguard_endpoint)
+              echo "- WireGuard endpoint: \`$endpoint\`"
+            fi
+            if [ "${VPN_ENDPOINT_MODE:-}" = "domain" ]; then
+              echo "- Domain endpoint: \`${VPN_DOMAIN}:${WG_LISTEN_PORT}\`"
+            else
+              echo "- Public IP mode: use the WireGuard endpoint above, or replace REPLACE_WITH_EGRESS_PUBLIC_IP in the downloaded client configs."
+            fi
+            echo "- Deploy output artifact: \`vpn-deploy-output\`"
+            echo "- Client private keys are not stored in GitHub or Infrazero."
+          } >> "$GITHUB_STEP_SUMMARY"

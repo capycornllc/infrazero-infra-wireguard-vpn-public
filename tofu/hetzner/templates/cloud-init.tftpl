@@ -1,0 +1,26 @@
+#cloud-config
+package_update: true
+packages:
+  - curl
+  - ca-certificates
+  - tar
+  - zstd
+
+write_files:
+  - path: /opt/infrazero/vpn.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      WG_LISTEN_PORT=${wg_listen_port}
+      WG_SERVER_ADDRESS=${wg_server_address}
+      WG_SERVER_PRIVATE_KEY_B64=${wg_server_private_key_b64}
+      WG_SERVER_PUBLIC_KEY=${wg_server_public_key}
+      VPN_PEERS_JSON_B64=${vpn_peers_json_b64}
+
+runcmd:
+  - mkdir -p /opt/infrazero/bootstrap
+  - curl -fsSL "${bootstrap_url}" -o /opt/infrazero/bootstrap/egress-vpn.tar.zst
+  - echo "${bootstrap_sha256}  /opt/infrazero/bootstrap/egress-vpn.tar.zst" | sha256sum -c -
+  - tar --zstd -xf /opt/infrazero/bootstrap/egress-vpn.tar.zst -C /opt/infrazero/bootstrap
+  - chmod +x /opt/infrazero/bootstrap/*.sh
+  - /opt/infrazero/bootstrap/egress-vpn.sh
