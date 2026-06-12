@@ -31,7 +31,13 @@ else
 fi
 
 PAYLOAD_FILE="build/bootstrap/vpn-bootstrap-secrets.env"
+PAYLOAD_CHECK_FILE="${PAYLOAD_FILE}.check"
 mkdir -p "$(dirname "$PAYLOAD_FILE")" "$(dirname "$OUTPUT_MANIFEST")"
+
+cleanup() {
+  rm -f "$PAYLOAD_FILE" "$PAYLOAD_CHECK_FILE"
+}
+trap cleanup EXIT
 
 "$PYTHON_BIN" - "$PAYLOAD_FILE" <<'PY'
 import base64
@@ -84,10 +90,13 @@ aws --endpoint-url "$S3_ENDPOINT" s3 cp "$PAYLOAD_FILE" "s3://${INFRA_STATE_BUCK
 PAYLOAD_URL=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://${INFRA_STATE_BUCKET}/${OBJECT_KEY}" --expires-in "$PRESIGN_EXPIRY")
 PAYLOAD_SHA256=$(sha256sum "$PAYLOAD_FILE" | awk '{print $1}')
 
+curl -fsSL "$PAYLOAD_URL" -o "$PAYLOAD_CHECK_FILE"
+echo "$PAYLOAD_SHA256  $PAYLOAD_CHECK_FILE" | sha256sum -c -
+rm -f "$PAYLOAD_CHECK_FILE"
+
 jq -n \
   --arg url "$PAYLOAD_URL" \
   --arg sha256 "$PAYLOAD_SHA256" \
   '{ "url": $url, "sha256": $sha256 }' > "$OUTPUT_MANIFEST"
 
-rm -f "$PAYLOAD_FILE"
 echo "Offloaded VPN bootstrap secrets to S3."

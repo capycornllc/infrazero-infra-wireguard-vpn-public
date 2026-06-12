@@ -29,11 +29,32 @@ require_var WG_SERVER_ADDRESS
 require_var VPN_BOOTSTRAP_SECRETS_URL
 require_var VPN_BOOTSTRAP_SECRETS_SHA256
 
+download_bootstrap_secrets() {
+  local url="$1"
+  local sha256="$2"
+  local target="$3"
+  local http_code=""
+
+  for attempt in {1..20}; do
+    rm -f "$target"
+    http_code=$(curl -sS -L -o "$target" -w "%{http_code}" --connect-timeout 5 --max-time 30 "$url" || true)
+    if [ "$http_code" = "200" ]; then
+      echo "$sha256  $target" | sha256sum -c -
+      chmod 600 "$target"
+      return 0
+    fi
+    log "WireGuard bootstrap secrets are not reachable yet (http $http_code, attempt $attempt/20)"
+    sleep 3
+  done
+
+  rm -f "$target"
+  echo "Failed to download WireGuard bootstrap secrets" >&2
+  return 1
+}
+
 SECRETS_ENV_FILE="/opt/infrazero/bootstrap/vpn-bootstrap-secrets.env"
 log "Downloading WireGuard bootstrap secrets"
-curl -fsSL "$VPN_BOOTSTRAP_SECRETS_URL" -o "$SECRETS_ENV_FILE"
-echo "${VPN_BOOTSTRAP_SECRETS_SHA256}  ${SECRETS_ENV_FILE}" | sha256sum -c -
-chmod 600 "$SECRETS_ENV_FILE"
+download_bootstrap_secrets "$VPN_BOOTSTRAP_SECRETS_URL" "$VPN_BOOTSTRAP_SECRETS_SHA256" "$SECRETS_ENV_FILE"
 # shellcheck disable=SC1090
 source "$SECRETS_ENV_FILE"
 rm -f "$SECRETS_ENV_FILE"

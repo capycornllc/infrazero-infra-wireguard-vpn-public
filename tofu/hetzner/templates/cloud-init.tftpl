@@ -17,10 +17,71 @@ write_files:
       VPN_BOOTSTRAP_SECRETS_URL='${bootstrap_secrets_url}'
       VPN_BOOTSTRAP_SECRETS_SHA256='${bootstrap_secrets_sha256}'
 
+  - path: /opt/infrazero/bootstrap/run.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      BOOTSTRAP_URL='${bootstrap_url}'
+      BOOTSTRAP_SHA256='${bootstrap_sha256}'
+      WORKDIR="/opt/infrazero/bootstrap"
+      ARCHIVE="$WORKDIR/egress-vpn.tar.zst"
+
+      log() {
+        printf '[infrazero-vpn-bootstrap] %s\n' "$*"
+      }
+
+      wait_for_bootstrap_url() {
+        local url="$1"
+        local code=""
+        log "checking bootstrap artifact URL"
+        for attempt in {1..30}; do
+          code=$(curl -sS -o /dev/null -w "%%{http_code}" --connect-timeout 5 --max-time 10 "$url" || true)
+          case "$code" in
+            2*)
+              log "bootstrap artifact URL is reachable (http $code)"
+              return 0
+              ;;
+            4*)
+              echo "[infrazero-vpn-bootstrap] bootstrap artifact URL returned http $code" >&2
+              return 1
+              ;;
+          esac
+          log "bootstrap artifact is not reachable yet (http $code, attempt $attempt/30)"
+          sleep 5
+        done
+        echo "[infrazero-vpn-bootstrap] bootstrap artifact URL did not become reachable" >&2
+        return 1
+      }
+
+      download_bootstrap() {
+        log "downloading egress-vpn bootstrap artifact"
+        for attempt in {1..5}; do
+          if timeout 120 curl -fsSL "$BOOTSTRAP_URL" -o "$ARCHIVE"; then
+            return 0
+          fi
+          echo "[infrazero-vpn-bootstrap] download attempt $attempt/5 failed; retrying in 5s..." >&2
+          sleep 5
+        done
+        return 1
+      }
+
+      mkdir -p "$WORKDIR"
+      wait_for_bootstrap_url "$BOOTSTRAP_URL"
+      download_bootstrap
+
+      log "verifying egress-vpn bootstrap artifact"
+      echo "$BOOTSTRAP_SHA256  $ARCHIVE" | sha256sum -c -
+
+      log "extracting egress-vpn bootstrap artifact"
+      tar --zstd -xf "$ARCHIVE" -C "$WORKDIR"
+      chmod +x "$WORKDIR"/*.sh
+      sed -i 's/\r$//' "$WORKDIR"/*.sh || true
+
+      log "running egress-vpn bootstrap"
+      "$WORKDIR/egress-vpn.sh"
+
 runcmd:
-  - mkdir -p /opt/infrazero/bootstrap
-  - curl -fsSL "${bootstrap_url}" -o /opt/infrazero/bootstrap/egress-vpn.tar.zst
-  - echo "${bootstrap_sha256}  /opt/infrazero/bootstrap/egress-vpn.tar.zst" | sha256sum -c -
-  - tar --zstd -xf /opt/infrazero/bootstrap/egress-vpn.tar.zst -C /opt/infrazero/bootstrap
-  - chmod +x /opt/infrazero/bootstrap/*.sh
-  - /opt/infrazero/bootstrap/egress-vpn.sh
+  - ["/opt/infrazero/bootstrap/run.sh"]

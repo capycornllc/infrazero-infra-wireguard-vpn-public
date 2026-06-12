@@ -57,7 +57,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          if [ "${VPN_CLOUD_PROVIDER:-}" = "ovhcloud" ]; then
+          provider=$(echo "${VPN_CLOUD_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')
+          if [ "$provider" = "ovh" ] || [ "$provider" = "ovhcloud" ]; then
             pip install python-openstackclient
           fi
 
@@ -72,13 +73,15 @@ jobs:
             echo "VPN_ENVIRONMENT=prod" >> "$GITHUB_ENV"
           fi
           provider="${VPN_CLOUD_PROVIDER:-hetzner}"
+          provider=$(echo "$provider" | tr '[:upper:]' '[:lower:]')
           case "$provider" in
             hetzner)
               echo "VPN_CLOUD_PROVIDER=hetzner" >> "$GITHUB_ENV"
               echo "VPN_TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
               echo "VPN_BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
               ;;
-            ovhcloud)
+            ovh|ovhcloud)
+              provider="ovhcloud"
               echo "VPN_CLOUD_PROVIDER=ovhcloud" >> "$GITHUB_ENV"
               echo "VPN_TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
               echo "VPN_BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
@@ -97,11 +100,39 @@ jobs:
             exit 1
           fi
           if [[ "${S3_ENDPOINT}" != http://* && "${S3_ENDPOINT}" != https://* ]]; then
-            echo "S3_ENDPOINT=https://${S3_ENDPOINT}" >> "$GITHUB_ENV"
+            S3_ENDPOINT="https://${S3_ENDPOINT}"
           fi
-          if [ -z "${S3_REGION:-}" ]; then
-            echo "S3_REGION=${VPN_CLOUD_REGION}" >> "$GITHUB_ENV"
-            echo "AWS_DEFAULT_REGION=${VPN_CLOUD_REGION}" >> "$GITHUB_ENV"
+          echo "S3_ENDPOINT=${S3_ENDPOINT}" >> "$GITHUB_ENV"
+
+          s3_region="${S3_REGION:-${VPN_CLOUD_REGION}}"
+          if [ -z "$s3_region" ]; then
+            echo "S3_REGION or VPN_CLOUD_REGION is required" >&2
+            exit 1
+          fi
+          if [ "$provider" = "ovhcloud" ]; then
+            # Match the app infra path: OVH S3 expects lowercase region without AZ suffix.
+            # Example: US-EAST-VA-1 -> us-east-va.
+            s3_region=$(echo "$s3_region" | tr '[:upper:]' '[:lower:]' | sed 's/-[0-9]*$//')
+          fi
+          echo "S3_REGION=${s3_region}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${s3_region}" >> "$GITHUB_ENV"
+
+          if [ "$provider" = "ovhcloud" ]; then
+            region_lower=$(echo "${VPN_CLOUD_REGION}" | tr '[:upper:]' '[:lower:]')
+            if [ -z "${OPENSTACK_AUTH_URL:-}" ]; then
+              if [[ "$region_lower" == us-* ]]; then
+                echo "OPENSTACK_AUTH_URL=https://auth.cloud.ovh.us/v3" >> "$GITHUB_ENV"
+              else
+                echo "OPENSTACK_AUTH_URL=https://auth.cloud.ovh.net/v3" >> "$GITHUB_ENV"
+              fi
+            fi
+            if [ -z "${OVH_ENDPOINT:-}" ]; then
+              if [[ "$region_lower" == us-* ]]; then
+                echo "OVH_ENDPOINT=ovh-us" >> "$GITHUB_ENV"
+              else
+                echo "OVH_ENDPOINT=ovh-eu" >> "$GITHUB_ENV"
+              fi
+            fi
           fi
 
       - name: Render backend
@@ -120,6 +151,9 @@ jobs:
           bootstrap_key="bootstrap/${VPN_CLOUD_PROVIDER}/egress-vpn.tar.zst"
           aws --endpoint-url "$S3_ENDPOINT" s3 cp build/bootstrap/egress-vpn.tar.zst "s3://$INFRA_STATE_BUCKET/$bootstrap_key"
           url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/$bootstrap_key" --expires-in 3600)
+          curl -fsSL "$url" -o build/bootstrap/egress-vpn.presign-check.tar.zst
+          echo "$sha  build/bootstrap/egress-vpn.presign-check.tar.zst" | sha256sum -c -
+          rm -f build/bootstrap/egress-vpn.presign-check.tar.zst
           jq -n --arg url "$url" --arg sha "$sha" '{ "egress-vpn": { "url": $url, "sha256": $sha } }' > build/bootstrap_artifacts.json
 
       - name: Offload WireGuard bootstrap secrets
@@ -135,19 +169,21 @@ jobs:
         run: tofu -chdir="$VPN_TOFU_DIR" apply -no-color -auto-approve -var-file=tofu.tfvars.json
 
       - name: Wait for OVH cloud-init
-        if: env.VPN_CLOUD_PROVIDER == 'ovhcloud'
-        env:
-          OS_AUTH_URL: ${{ env.OPENSTACK_AUTH_URL }}
-          OS_USERNAME: ${{ env.OPENSTACK_USER_NAME }}
-          OS_PASSWORD: ${{ env.OPENSTACK_PASSWORD }}
-          OS_PROJECT_ID: ${{ env.OVH_CLOUD_PROJECT_ID }}
-          OS_REGION_NAME: ${{ env.VPN_CLOUD_REGION }}
-          OS_INTERFACE: public
-          OS_IDENTITY_API_VERSION: "3"
-          OS_USER_DOMAIN_NAME: Default
-          OS_PROJECT_DOMAIN_NAME: Default
         run: |
           set -euo pipefail
+          if [ "${VPN_CLOUD_PROVIDER:-}" != "ovhcloud" ]; then
+            echo "Skipping OVH cloud-init wait for provider: ${VPN_CLOUD_PROVIDER:-hetzner}"
+            exit 0
+          fi
+          export OS_AUTH_URL="$OPENSTACK_AUTH_URL"
+          export OS_USERNAME="$OPENSTACK_USER_NAME"
+          export OS_PASSWORD="$OPENSTACK_PASSWORD"
+          export OS_PROJECT_ID="$OVH_CLOUD_PROJECT_ID"
+          export OS_REGION_NAME="$VPN_CLOUD_REGION"
+          export OS_INTERFACE=public
+          export OS_IDENTITY_API_VERSION=3
+          export OS_USER_DOMAIN_NAME=Default
+          export OS_PROJECT_DOMAIN_NAME=Default
           mkdir -p build/deploy
           server_id=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_server_id)
           for attempt in $(seq 1 48); do
