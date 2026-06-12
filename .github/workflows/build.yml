@@ -57,6 +57,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
+          if [ "${VPN_CLOUD_PROVIDER:-}" = "ovhcloud" ]; then
+            pip install python-openstackclient
+          fi
 
       - name: Normalize deploy environment
         run: |
@@ -131,6 +134,40 @@ jobs:
       - name: Apply VPN egress
         run: tofu -chdir="$VPN_TOFU_DIR" apply -no-color -auto-approve -var-file=tofu.tfvars.json
 
+      - name: Wait for OVH cloud-init
+        if: env.VPN_CLOUD_PROVIDER == 'ovhcloud'
+        env:
+          OS_AUTH_URL: ${{ env.OPENSTACK_AUTH_URL }}
+          OS_USERNAME: ${{ env.OPENSTACK_USER_NAME }}
+          OS_PASSWORD: ${{ env.OPENSTACK_PASSWORD }}
+          OS_PROJECT_ID: ${{ env.OVH_CLOUD_PROJECT_ID }}
+          OS_REGION_NAME: ${{ env.VPN_CLOUD_REGION }}
+          OS_INTERFACE: public
+          OS_IDENTITY_API_VERSION: "3"
+          OS_USER_DOMAIN_NAME: Default
+          OS_PROJECT_DOMAIN_NAME: Default
+        run: |
+          set -euo pipefail
+          mkdir -p build/deploy
+          server_id=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_server_id)
+          for attempt in $(seq 1 48); do
+            openstack console log show --lines 2000 "$server_id" > build/deploy/ovh-console.log 2>&1 || true
+            if grep -q "WireGuard VPN egress is configured" build/deploy/ovh-console.log; then
+              echo "OVH cloud-init finished and WireGuard was configured."
+              exit 0
+            fi
+            if grep -Eiq "(Traceback|Failed to start|Missing .+| is required|No such file|sha256sum: WARNING|cloud-init.*failed|curl: \\([0-9]+\\))" build/deploy/ovh-console.log; then
+              echo "OVH cloud-init reported an error:" >&2
+              tail -n 220 build/deploy/ovh-console.log >&2
+              exit 1
+            fi
+            echo "Waiting for OVH cloud-init marker ($attempt/48)..."
+            sleep 10
+          done
+          echo "OVH cloud-init did not report WireGuard readiness in time." >&2
+          tail -n 220 build/deploy/ovh-console.log >&2
+          exit 1
+
       - name: Sync Cloudflare DNS
         if: env.VPN_ENDPOINT_MODE == 'domain'
         run: |
@@ -160,6 +197,14 @@ jobs:
         with:
           name: vpn-deploy-output
           path: build/deploy/vpn-deploy-output.json
+
+      - name: Upload OVH console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ovh-vpn-console-log
+          path: build/deploy/ovh-console.log
+          if-no-files-found: ignore
 
       - name: Deployment summary
         if: always()

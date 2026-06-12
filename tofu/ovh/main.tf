@@ -59,8 +59,9 @@ resource "openstack_networking_router_interface_v2" "vpn" {
 }
 
 resource "openstack_networking_secgroup_v2" "vpn" {
-  name        = "${var.name_prefix}-vpn-sg"
-  description = "Infrazero WireGuard VPN egress security group"
+  name                 = "${var.name_prefix}-vpn-sg"
+  description          = "Infrazero WireGuard VPN egress security group"
+  delete_default_rules = true
 }
 
 resource "openstack_networking_secgroup_rule_v2" "vpn_wireguard" {
@@ -78,6 +79,13 @@ resource "openstack_networking_secgroup_rule_v2" "vpn_icmp" {
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "icmp"
+  remote_ip_prefix  = "0.0.0.0/0"
+}
+
+resource "openstack_networking_secgroup_rule_v2" "vpn_egress_ipv4" {
+  security_group_id = openstack_networking_secgroup_v2.vpn.id
+  direction         = "egress"
+  ethertype         = "IPv4"
   remote_ip_prefix  = "0.0.0.0/0"
 }
 
