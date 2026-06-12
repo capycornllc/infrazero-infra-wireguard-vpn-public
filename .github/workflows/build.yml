@@ -15,6 +15,15 @@ jobs:
       INFRA_STATE_BUCKET: ${{ secrets.INFRA_STATE_BUCKET }}
       HCLOUD_TOKEN: ${{ secrets.HETZNER_CLOUD_TOKEN }}
       TF_VAR_hcloud_token: ${{ secrets.HETZNER_CLOUD_TOKEN }}
+      OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
+      OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
+      OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+      OVH_CLOUD_PROJECT_ID: ${{ secrets.OVH_CLOUD_PROJECT_ID }}
+      OPENSTACK_USER_NAME: ${{ secrets.OPENSTACK_USER_NAME }}
+      OPENSTACK_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
+      OPENSTACK_AUTH_URL: ${{ secrets.OPENSTACK_AUTH_URL }}
+      OVH_ENDPOINT: ${{ secrets.OVH_ENDPOINT }}
+      OVH_EXT_NET_NAME: ${{ secrets.OVH_EXT_NET_NAME }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       VPN_PROJECT_SLUG: ${{ secrets.VPN_PROJECT_SLUG }}
       VPN_ENVIRONMENT: ${{ secrets.VPN_ENVIRONMENT }}
@@ -59,6 +68,23 @@ jobs:
           if [ -z "${VPN_ENVIRONMENT:-}" ]; then
             echo "VPN_ENVIRONMENT=prod" >> "$GITHUB_ENV"
           fi
+          provider="${VPN_CLOUD_PROVIDER:-hetzner}"
+          case "$provider" in
+            hetzner)
+              echo "VPN_CLOUD_PROVIDER=hetzner" >> "$GITHUB_ENV"
+              echo "VPN_TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
+              echo "VPN_BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
+              ;;
+            ovhcloud)
+              echo "VPN_CLOUD_PROVIDER=ovhcloud" >> "$GITHUB_ENV"
+              echo "VPN_TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
+              echo "VPN_BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unsupported VPN_CLOUD_PROVIDER: $provider" >&2
+              exit 1
+              ;;
+          esac
           if [ -z "${VPN_CLOUD_REGION:-}" ]; then
             echo "VPN_CLOUD_REGION is required" >&2
             exit 1
@@ -76,46 +102,50 @@ jobs:
           fi
 
       - name: Render backend
-        run: python scripts/common/render-backend.py --output tofu/hetzner/backend.hcl
+        run: python scripts/common/render-backend.py --output "$VPN_TOFU_DIR/backend.hcl"
 
       - name: Init OpenTofu
-        run: tofu -chdir=tofu/hetzner init -no-color -backend-config=backend.hcl
+        run: tofu -chdir="$VPN_TOFU_DIR" init -no-color -backend-config=backend.hcl
 
       - name: Package and upload egress bootstrap
         run: |
           set -euo pipefail
           mkdir -p build/bootstrap
-          chmod +x bootstrap/hetzner/*.sh
-          tar --zstd -cf build/bootstrap/egress-vpn.tar.zst -C bootstrap/hetzner common.sh egress-vpn.sh
+          chmod +x "$VPN_BOOTSTRAP_DIR"/*.sh
+          tar --zstd -cf build/bootstrap/egress-vpn.tar.zst -C "$VPN_BOOTSTRAP_DIR" common.sh egress-vpn.sh
           sha=$(sha256sum build/bootstrap/egress-vpn.tar.zst | awk '{print $1}')
-          aws --endpoint-url "$S3_ENDPOINT" s3 cp build/bootstrap/egress-vpn.tar.zst "s3://$INFRA_STATE_BUCKET/bootstrap/egress-vpn.tar.zst"
-          url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/bootstrap/egress-vpn.tar.zst" --expires-in 3600)
+          bootstrap_key="bootstrap/${VPN_CLOUD_PROVIDER}/egress-vpn.tar.zst"
+          aws --endpoint-url "$S3_ENDPOINT" s3 cp build/bootstrap/egress-vpn.tar.zst "s3://$INFRA_STATE_BUCKET/$bootstrap_key"
+          url=$(aws --endpoint-url "$S3_ENDPOINT" s3 presign "s3://$INFRA_STATE_BUCKET/$bootstrap_key" --expires-in 3600)
           jq -n --arg url "$url" --arg sha "$sha" '{ "egress-vpn": { "url": $url, "sha256": $sha } }' > build/bootstrap_artifacts.json
 
+      - name: Offload WireGuard bootstrap secrets
+        run: bash scripts/common/offload-vpn-bootstrap-secrets.sh build/bootstrap_secrets.json
+
       - name: Render OpenTofu tfvars
-        run: python scripts/common/render-vpn-tfvars.py --bootstrap-manifest build/bootstrap_artifacts.json --output tofu/hetzner/tofu.tfvars.json
+        run: python scripts/common/render-vpn-tfvars.py --bootstrap-manifest build/bootstrap_artifacts.json --bootstrap-secrets-manifest build/bootstrap_secrets.json --output "$VPN_TOFU_DIR/tofu.tfvars.json"
 
       - name: Destroy previous VPN egress
-        run: tofu -chdir=tofu/hetzner destroy -no-color -auto-approve -var-file=tofu.tfvars.json
+        run: tofu -chdir="$VPN_TOFU_DIR" destroy -no-color -auto-approve -var-file=tofu.tfvars.json
 
       - name: Apply VPN egress
-        run: tofu -chdir=tofu/hetzner apply -no-color -auto-approve -var-file=tofu.tfvars.json
+        run: tofu -chdir="$VPN_TOFU_DIR" apply -no-color -auto-approve -var-file=tofu.tfvars.json
 
       - name: Sync Cloudflare DNS
         if: env.VPN_ENDPOINT_MODE == 'domain'
         run: |
           set -euo pipefail
-          egress_ip=$(tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4)
+          egress_ip=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4)
           python scripts/common/sync-cloudflare-dns.py --hostname "$VPN_DOMAIN" --ip "$egress_ip"
 
       - name: Write deploy outputs
         if: success()
         run: |
           set -euo pipefail
-          egress_ip=$(tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4)
-          public_ip_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_public_ip_endpoint)
-          wireguard_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_endpoint)
-          domain_endpoint=$(tofu -chdir=tofu/hetzner output -no-color -raw wireguard_domain_endpoint 2>/dev/null || true)
+          egress_ip=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4)
+          public_ip_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_public_ip_endpoint)
+          wireguard_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_endpoint)
+          domain_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_domain_endpoint 2>/dev/null || true)
           python scripts/common/render-deploy-output.py \
             --egress-public-ip "$egress_ip" \
             --public-ip-endpoint "$public_ip_endpoint" \
@@ -137,11 +167,12 @@ jobs:
           {
             echo "## Infrazero WireGuard VPN"
             echo ""
-            if tofu -chdir=tofu/hetzner output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then
+            echo "- Cloud provider: \`${VPN_CLOUD_PROVIDER:-hetzner}\`"
+            if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then
               ip=$(cat /tmp/egress_ip)
               echo "- Egress public IPv4: \`$ip\`"
             fi
-            if tofu -chdir=tofu/hetzner output -no-color -raw wireguard_endpoint >/tmp/wireguard_endpoint 2>/dev/null; then
+            if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_endpoint >/tmp/wireguard_endpoint 2>/dev/null; then
               endpoint=$(cat /tmp/wireguard_endpoint)
               echo "- WireGuard endpoint: \`$endpoint\`"
             fi

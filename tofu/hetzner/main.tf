@@ -40,12 +40,12 @@ resource "hcloud_server" "egress_vpn" {
   firewall_ids = [hcloud_firewall.vpn.id]
 
   user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
-    bootstrap_url              = local.bootstrap.url
-    bootstrap_sha256           = local.bootstrap.sha256
-    wg_listen_port             = tostring(var.wg_listen_port)
-    wg_server_address          = var.wg_server_address
-    wg_server_private_key_b64  = base64encode(var.wg_server_private_key)
-    wg_server_public_key       = var.wg_server_public_key
-    vpn_peers_json_b64         = base64encode(var.vpn_peers_json)
+    bootstrap_url                 = local.bootstrap.url
+    bootstrap_sha256              = local.bootstrap.sha256
+    bootstrap_secrets_url         = var.bootstrap_secrets.url
+    bootstrap_secrets_sha256      = var.bootstrap_secrets.sha256
+    wg_listen_port                = tostring(var.wg_listen_port)
+    wg_server_address             = var.wg_server_address
+    wg_server_public_key          = var.wg_server_public_key
   })
 }

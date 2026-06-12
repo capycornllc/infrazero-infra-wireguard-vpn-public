@@ -7,7 +7,16 @@ application deploy payload.
 
 The first backend skeleton prepares these values:
 
-- `HETZNER_CLOUD_TOKEN`
+- `HETZNER_CLOUD_TOKEN` (Hetzner only)
+- `OVH_APPLICATION_KEY` (OVHcloud only)
+- `OVH_APPLICATION_SECRET` (OVHcloud only)
+- `OVH_CONSUMER_KEY` (OVHcloud only)
+- `OVH_CLOUD_PROJECT_ID` (OVHcloud only)
+- `OPENSTACK_USER_NAME` (OVHcloud only)
+- `OPENSTACK_PASSWORD` (OVHcloud only)
+- `OPENSTACK_AUTH_URL` (OVHcloud only)
+- `OVH_ENDPOINT` (OVHcloud only)
+- `OVH_EXT_NET_NAME` (OVHcloud only)
 - `CLOUDFLARE_API_TOKEN`
 - `S3_ACCESS_KEY_ID`
 - `S3_SECRET_ACCESS_KEY`
@@ -37,7 +46,10 @@ Client private keys are delivered only in the local encrypted credentials ZIP.
 ## Security Notes
 
 - Application admins and VPN peers are different domains.
-- Secrets are written only as GitHub Actions secrets by the backend integration.
+- Secrets are written only as GitHub Actions secrets by the Infrazero deploy integration.
+- The infra workflow offloads WireGuard bootstrap secrets to a short-lived S3
+  object and passes only a presigned URL plus SHA-256 through OpenTofu
+  `user_data`.
 - Private keys must not be committed to this repository.
 - Scripts should fail closed when required secrets are missing.
 
@@ -45,7 +57,7 @@ Client private keys are delivered only in the local encrypted credentials ZIP.
 
 Future scripts should keep responsibilities narrow:
 
-- provision one Hetzner egress server;
+- provision one provider-specific egress server from `tofu/hetzner` or `tofu/ovh`;
 - install and configure WireGuard;
 - enable IPv4 forwarding and NAT for the selected routing mode;
 - generate client config artifacts from `VPN_PEERS_JSON`;
