@@ -11,11 +11,11 @@ write_files:
     owner: root:root
     permissions: "0600"
     content: |
-      WG_LISTEN_PORT=${wg_listen_port}
-      WG_SERVER_ADDRESS=${wg_server_address}
-      WG_SERVER_PUBLIC_KEY=${wg_server_public_key}
-      VPN_BOOTSTRAP_SECRETS_URL=${bootstrap_secrets_url}
-      VPN_BOOTSTRAP_SECRETS_SHA256=${bootstrap_secrets_sha256}
+      WG_LISTEN_PORT='${wg_listen_port}'
+      WG_SERVER_ADDRESS='${wg_server_address}'
+      WG_SERVER_PUBLIC_KEY='${wg_server_public_key}'
+      VPN_BOOTSTRAP_SECRETS_URL='${bootstrap_secrets_url}'
+      VPN_BOOTSTRAP_SECRETS_SHA256='${bootstrap_secrets_sha256}'
 
 runcmd:
   - mkdir -p /opt/infrazero/bootstrap

@@ -57,7 +57,7 @@ def main() -> int:
     elif cloud_provider == "ovhcloud":
         tfvars.update({
             "private_cidr": optional_env("VPN_PRIVATE_CIDR", "10.80.0.0/24"),
-            "server_image_regex": optional_env("OVH_SERVER_IMAGE_REGEX", "^Ubuntu 22\\.04"),
+            "server_image_regex": optional_env("OVH_SERVER_IMAGE_REGEX", "^Ubuntu 24\\.04"),
             "ovh_application_key": require_env("OVH_APPLICATION_KEY"),
             "ovh_application_secret": require_env("OVH_APPLICATION_SECRET"),
             "ovh_consumer_key": require_env("OVH_CONSUMER_KEY"),

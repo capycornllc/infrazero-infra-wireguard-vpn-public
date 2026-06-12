@@ -81,11 +81,25 @@ resource "openstack_networking_secgroup_rule_v2" "vpn_icmp" {
   remote_ip_prefix  = "0.0.0.0/0"
 }
 
+resource "openstack_networking_port_v2" "egress_vpn" {
+  name               = "${var.name_prefix}-egress-vpn-port"
+  network_id         = openstack_networking_network_v2.vpn.id
+  admin_state_up     = true
+  security_group_ids = [openstack_networking_secgroup_v2.vpn.id]
+
+  fixed_ip {
+    subnet_id = openstack_networking_subnet_v2.vpn.id
+  }
+
+  depends_on = [
+    openstack_networking_router_interface_v2.vpn,
+  ]
+}
+
 resource "openstack_compute_instance_v2" "egress_vpn" {
-  name            = "${var.name_prefix}-egress-vpn"
-  image_id        = data.openstack_images_image_v2.ubuntu.id
-  flavor_name     = var.egress_server_type
-  security_groups = [openstack_networking_secgroup_v2.vpn.name]
+  name        = "${var.name_prefix}-egress-vpn"
+  image_id    = data.openstack_images_image_v2.ubuntu.id
+  flavor_name = var.egress_server_type
 
   user_data = templatefile("${path.module}/templates/cloud-init.tftpl", {
     bootstrap_url            = local.bootstrap.url
@@ -98,7 +112,7 @@ resource "openstack_compute_instance_v2" "egress_vpn" {
   })
 
   network {
-    uuid = openstack_networking_network_v2.vpn.id
+    port = openstack_networking_port_v2.egress_vpn.id
   }
 
   lifecycle {
@@ -108,16 +122,15 @@ resource "openstack_compute_instance_v2" "egress_vpn" {
   metadata = local.labels
 
   depends_on = [
-    openstack_networking_subnet_v2.vpn,
-    openstack_networking_router_interface_v2.vpn,
+    openstack_networking_port_v2.egress_vpn,
   ]
 }
 
 resource "openstack_networking_floatingip_v2" "egress_vpn" {
-  pool = var.ovh_ext_net_name
-}
+  pool    = var.ovh_ext_net_name
+  port_id = openstack_networking_port_v2.egress_vpn.id
 
-resource "openstack_compute_floatingip_associate_v2" "egress_vpn" {
-  floating_ip = openstack_networking_floatingip_v2.egress_vpn.address
-  instance_id = openstack_compute_instance_v2.egress_vpn.id
+  depends_on = [
+    openstack_compute_instance_v2.egress_vpn,
+  ]
 }

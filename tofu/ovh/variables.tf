@@ -21,7 +21,7 @@ variable "private_cidr" {
 
 variable "server_image_regex" {
   type        = string
-  default     = "^Ubuntu 22\\.04"
+  default     = "^Ubuntu 24\\.04"
   description = "Regex to match the OVH/OpenStack image name."
 }
 
