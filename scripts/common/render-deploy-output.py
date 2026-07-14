@@ -14,6 +14,7 @@ def main() -> int:
     parser.add_argument("--egress-public-ip", required=True)
     parser.add_argument("--public-ip-endpoint", required=True)
     parser.add_argument("--wireguard-endpoint", required=True)
+    parser.add_argument("--admin-wireguard-endpoint", required=True)
     parser.add_argument("--domain-endpoint", default="")
     parser.add_argument("--output", default="build/deploy/vpn-deploy-output.json")
     args = parser.parse_args()
@@ -28,9 +29,11 @@ def main() -> int:
         "endpointMode": endpoint_mode,
         "egressPublicIpv4": clean(args.egress_public_ip),
         "wireguardEndpoint": clean(args.wireguard_endpoint),
+        "adminWireguardEndpoint": clean(args.admin_wireguard_endpoint),
         "publicIpEndpoint": clean(args.public_ip_endpoint),
         "domainEndpoint": clean(args.domain_endpoint),
         "listenPort": clean(os.getenv("WG_LISTEN_PORT")) or "51820",
+        "adminListenPort": clean(os.getenv("VPN_ADMIN_WG_LISTEN_PORT")) or "51821",
         "clientConfigPatch": {
             "placeholder": "REPLACE_WITH_EGRESS_PUBLIC_IP",
             "replacement": clean(args.egress_public_ip),

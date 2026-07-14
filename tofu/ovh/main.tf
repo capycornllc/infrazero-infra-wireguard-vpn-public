@@ -31,6 +31,8 @@ locals {
   }
 
   bootstrap = var.bootstrap_artifacts["egress-vpn"]
+
+  debug_root_password_escaped = replace(var.debug_root_password, "'", "'\"'\"'")
 }
 
 resource "openstack_networking_network_v2" "vpn" {
@@ -74,11 +76,32 @@ resource "openstack_networking_secgroup_rule_v2" "vpn_wireguard" {
   remote_ip_prefix  = "0.0.0.0/0"
 }
 
+resource "openstack_networking_secgroup_rule_v2" "vpn_admin_wireguard" {
+  security_group_id = openstack_networking_secgroup_v2.vpn.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "udp"
+  port_range_min    = var.admin_wg_listen_port
+  port_range_max    = var.admin_wg_listen_port
+  remote_ip_prefix  = "0.0.0.0/0"
+}
+
 resource "openstack_networking_secgroup_rule_v2" "vpn_icmp" {
   security_group_id = openstack_networking_secgroup_v2.vpn.id
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "icmp"
+  remote_ip_prefix  = "0.0.0.0/0"
+}
+
+resource "openstack_networking_secgroup_rule_v2" "vpn_ssh_debug" {
+  count             = length(var.debug_root_password) > 0 ? 1 : 0
+  security_group_id = openstack_networking_secgroup_v2.vpn.id
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
   remote_ip_prefix  = "0.0.0.0/0"
 }
 
@@ -117,6 +140,10 @@ resource "openstack_compute_instance_v2" "egress_vpn" {
     wg_listen_port           = tostring(var.wg_listen_port)
     wg_server_address        = var.wg_server_address
     wg_server_public_key     = var.wg_server_public_key
+    admin_wg_listen_port     = tostring(var.admin_wg_listen_port)
+    admin_wg_server_address  = var.admin_wg_server_address
+    admin_users_json_b64     = var.admin_users_json_b64
+    debug_root_password_escaped = local.debug_root_password_escaped
   })
 
   network {

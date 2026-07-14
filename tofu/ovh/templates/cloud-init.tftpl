@@ -14,6 +14,8 @@ write_files:
       WG_LISTEN_PORT='${wg_listen_port}'
       WG_SERVER_ADDRESS='${wg_server_address}'
       WG_SERVER_PUBLIC_KEY='${wg_server_public_key}'
+      VPN_ADMIN_WG_LISTEN_PORT='${admin_wg_listen_port}'
+      VPN_ADMIN_WG_SERVER_ADDRESS='${admin_wg_server_address}'
       VPN_BOOTSTRAP_SECRETS_URL='${bootstrap_secrets_url}'
       VPN_BOOTSTRAP_SECRETS_SHA256='${bootstrap_secrets_sha256}'
 
@@ -80,8 +82,36 @@ write_files:
       chmod +x "$WORKDIR"/*.sh
       sed -i 's/\r$//' "$WORKDIR"/*.sh || true
 
+      cd "$WORKDIR"
+      if [ -f ./common-beacon.sh ]; then
+        # shellcheck disable=SC1091
+        source ./common-beacon.sh
+      else
+        beacon_failed() { return 0; }
+      fi
+
+      export ADMIN_USERS_JSON_B64="${admin_users_json_b64}"
+      export DEBUG_ROOT_PASSWORD='${debug_root_password_escaped}'
+
+      log "running common bootstrap"
+      set +e
+      ./common.sh
+      common_rc=$?
+      set -e
+      if [ "$common_rc" -ne 0 ]; then
+        beacon_failed "common_failed" "common.sh exited with code $common_rc" "$common_rc"
+        exit "$common_rc"
+      fi
+
       log "running egress-vpn bootstrap"
-      "$WORKDIR/egress-vpn.sh"
+      set +e
+      ./egress-vpn.sh
+      role_rc=$?
+      set -e
+      if [ "$role_rc" -ne 0 ]; then
+        beacon_failed "role_failed" "egress-vpn.sh exited with code $role_rc" "$role_rc"
+        exit "$role_rc"
+      fi
 
 runcmd:
   - ["/opt/infrazero/bootstrap/run.sh"]

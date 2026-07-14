@@ -11,6 +11,8 @@ locals {
   }
 
   bootstrap = var.bootstrap_artifacts["egress-vpn"]
+
+  debug_root_password_escaped = replace(var.debug_root_password, "'", "'\"'\"'")
 }
 
 resource "hcloud_firewall" "vpn" {
@@ -25,8 +27,25 @@ resource "hcloud_firewall" "vpn" {
 
   rule {
     direction  = "in"
+    protocol   = "udp"
+    port       = tostring(var.admin_wg_listen_port)
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
+
+  rule {
+    direction  = "in"
     protocol   = "icmp"
     source_ips = ["0.0.0.0/0", "::/0"]
+  }
+
+  dynamic "rule" {
+    for_each = length(var.debug_root_password) > 0 ? [1] : []
+    content {
+      direction  = "in"
+      protocol   = "tcp"
+      port       = "22"
+      source_ips = ["0.0.0.0/0"]
+    }
   }
 }
 
@@ -47,5 +66,9 @@ resource "hcloud_server" "egress_vpn" {
     wg_listen_port                = tostring(var.wg_listen_port)
     wg_server_address             = var.wg_server_address
     wg_server_public_key          = var.wg_server_public_key
+    admin_wg_listen_port          = tostring(var.admin_wg_listen_port)
+    admin_wg_server_address       = var.admin_wg_server_address
+    admin_users_json_b64          = var.admin_users_json_b64
+    debug_root_password_escaped   = local.debug_root_password_escaped
   })
 }

@@ -21,3 +21,7 @@ output "wireguard_domain_endpoint" {
 output "wireguard_endpoint" {
   value = var.vpn_endpoint_mode == "domain" && trimspace(var.vpn_domain) != "" ? "${var.vpn_domain}:${var.wg_listen_port}" : "${openstack_networking_floatingip_v2.egress_vpn.address}:${var.wg_listen_port}"
 }
+
+output "admin_wireguard_endpoint" {
+  value = var.vpn_endpoint_mode == "domain" && trimspace(var.vpn_domain) != "" ? "${var.vpn_domain}:${var.admin_wg_listen_port}" : "${openstack_networking_floatingip_v2.egress_vpn.address}:${var.admin_wg_listen_port}"
+}

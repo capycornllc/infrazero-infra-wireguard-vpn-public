@@ -1,28 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-log() {
-  printf '[infrazero-vpn] %s\n' "$*"
-}
+export INFRAZERO_PROVIDER="${INFRAZERO_PROVIDER:-hetzner}"
+_infrazero_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-require_root() {
-  if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must run as root" >&2
-    exit 1
-  fi
-}
+if [ -f "${_infrazero_script_dir}/common-system.sh" ]; then
+  exec bash "${_infrazero_script_dir}/common-system.sh" "$@"
+elif [ -f "${_infrazero_script_dir}/../common/common-system.sh" ]; then
+  exec bash "${_infrazero_script_dir}/../common/common-system.sh" "$@"
+fi
 
-retry() {
-  local attempts="$1"
-  shift
-  local delay=3
-  local n=1
-  until "$@"; do
-    if [ "$n" -ge "$attempts" ]; then
-      return 1
-    fi
-    log "Retry $n/$attempts failed: $*"
-    n=$((n + 1))
-    sleep "$delay"
-  done
-}
+echo "[common] common-system.sh not found" >&2
+exit 1

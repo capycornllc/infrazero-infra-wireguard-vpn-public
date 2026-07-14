@@ -17,6 +17,50 @@ def optional_env(name: str, default: str = "") -> str:
     return os.getenv(name, "").strip() or default
 
 
+def parse_json_env(name: str, default):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"{name} is invalid JSON: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def b64_json(value) -> str:
+    import base64
+
+    payload = json.dumps(value, separators=(",", ":"))
+    return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def normalize_admin_ssh_keys() -> dict[str, list[str]]:
+    raw = parse_json_env("OPS_SSH_KEYS_JSON", {})
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        print("OPS_SSH_KEYS_JSON must be a JSON object: username -> ssh public keys", file=sys.stderr)
+        raise SystemExit(1)
+
+    normalized: dict[str, list[str]] = {}
+    for username, keys in raw.items():
+        user = str(username or "").strip()
+        if not user:
+            continue
+        if isinstance(keys, str):
+            keys = [keys]
+        if not isinstance(keys, list):
+            continue
+        clean_keys = [str(key).strip() for key in keys if str(key or "").strip()]
+        if clean_keys:
+            normalized[user] = clean_keys
+    if not normalized:
+        print("OPS_SSH_KEYS_JSON must include at least one admin SSH key", file=sys.stderr)
+        raise SystemExit(1)
+    return normalized
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render VPN OpenTofu tfvars from GitHub Actions secrets.")
     parser.add_argument("--bootstrap-manifest", required=True)
@@ -28,9 +72,11 @@ def main() -> int:
     bootstrap_secrets = json.loads(Path(args.bootstrap_secrets_manifest).read_text(encoding="utf-8-sig"))
 
     listen_port = int(require_env("WG_LISTEN_PORT"))
+    admin_listen_port = int(optional_env("VPN_ADMIN_WG_LISTEN_PORT", "51821"))
     project = require_env("VPN_PROJECT_SLUG")
     environment = optional_env("VPN_ENVIRONMENT", "prod")
     cloud_provider = optional_env("VPN_CLOUD_PROVIDER", "hetzner")
+    admin_ssh_keys = normalize_admin_ssh_keys()
     tfvars = {
         "project": project,
         "environment": environment,
@@ -40,6 +86,8 @@ def main() -> int:
         "wg_listen_port": listen_port,
         "wg_server_address": require_env("WG_SERVER_ADDRESS"),
         "wg_server_public_key": require_env("WG_SERVER_PUBLIC_KEY"),
+        "admin_wg_listen_port": admin_listen_port,
+        "admin_wg_server_address": optional_env("VPN_ADMIN_WG_SERVER_ADDRESS", "10.81.0.1/24"),
         "vpn_endpoint_mode": optional_env("VPN_ENDPOINT_MODE", "mvp_ip"),
         "vpn_domain": optional_env("VPN_DOMAIN"),
         "vpn_routing_mode": optional_env("VPN_ROUTING_MODE", "full"),
@@ -47,6 +95,8 @@ def main() -> int:
         "vpn_client_dns": optional_env("VPN_CLIENT_DNS", "1.1.1.1, 8.8.8.8"),
         "bootstrap_artifacts": bootstrap_artifacts,
         "bootstrap_secrets": bootstrap_secrets,
+        "admin_users_json_b64": b64_json(admin_ssh_keys),
+        "debug_root_password": optional_env("DEBUG_ROOT_PASSWORD"),
     }
 
     if cloud_provider == "hetzner":

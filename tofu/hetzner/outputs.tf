@@ -21,3 +21,7 @@ output "wireguard_domain_endpoint" {
 output "wireguard_endpoint" {
   value = var.vpn_endpoint_mode == "domain" && trimspace(var.vpn_domain) != "" ? "${var.vpn_domain}:${var.wg_listen_port}" : "${hcloud_server.egress_vpn.ipv4_address}:${var.wg_listen_port}"
 }
+
+output "admin_wireguard_endpoint" {
+  value = var.vpn_endpoint_mode == "domain" && trimspace(var.vpn_domain) != "" ? "${var.vpn_domain}:${var.admin_wg_listen_port}" : "${hcloud_server.egress_vpn.ipv4_address}:${var.admin_wg_listen_port}"
+}

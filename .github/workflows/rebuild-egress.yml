@@ -1,4 +1,4 @@
-name: build
+name: rebuild-egress
 
 on:
   workflow_dispatch:
@@ -249,7 +249,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Infrazero WireGuard VPN"
+            echo "## Infrazero WireGuard VPN egress rebuilt"
             echo ""
             echo "- Cloud provider: \`${VPN_CLOUD_PROVIDER:-hetzner}\`"
             if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then

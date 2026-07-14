@@ -20,6 +20,8 @@ require_env S3_ENDPOINT
 require_env INFRA_STATE_BUCKET
 require_env WG_SERVER_PRIVATE_KEY
 require_env VPN_PEERS_JSON
+require_env VPN_ADMIN_WG_SERVER_PRIVATE_KEY
+require_env VPN_ADMIN_PEERS_JSON
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
@@ -49,11 +51,19 @@ import sys
 payload_path = pathlib.Path(sys.argv[1])
 server_private_key = os.environ.get("WG_SERVER_PRIVATE_KEY", "").strip()
 peers_json = os.environ.get("VPN_PEERS_JSON", "[]").strip() or "[]"
+admin_server_private_key = os.environ.get("VPN_ADMIN_WG_SERVER_PRIVATE_KEY", "").strip()
+admin_peers_json = os.environ.get("VPN_ADMIN_PEERS_JSON", "[]").strip() or "[]"
 
 try:
     json.loads(peers_json)
 except json.JSONDecodeError as exc:
     raise SystemExit(f"VPN_PEERS_JSON is invalid JSON: {exc}")
+try:
+    admin_peers = json.loads(admin_peers_json)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"VPN_ADMIN_PEERS_JSON is invalid JSON: {exc}")
+if not isinstance(admin_peers, list) or not admin_peers:
+    raise SystemExit("VPN_ADMIN_PEERS_JSON must include at least one admin WireGuard peer")
 
 def b64(value: str) -> str:
     return base64.b64encode(value.encode("utf-8")).decode("ascii")
@@ -63,6 +73,8 @@ payload_path.write_text(
         [
             f"WG_SERVER_PRIVATE_KEY_B64={b64(server_private_key)}",
             f"VPN_PEERS_JSON_B64={b64(peers_json)}",
+            f"VPN_ADMIN_WG_SERVER_PRIVATE_KEY_B64={b64(admin_server_private_key)}",
+            f"VPN_ADMIN_PEERS_JSON_B64={b64(admin_peers_json)}",
             "",
         ]
     ),

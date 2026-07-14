@@ -41,6 +41,16 @@ variable "wg_server_public_key" {
   type = string
 }
 
+variable "admin_wg_listen_port" {
+  type    = number
+  default = 51821
+}
+
+variable "admin_wg_server_address" {
+  type    = string
+  default = "10.81.0.1/24"
+}
+
 variable "vpn_endpoint_mode" {
   type = string
 }
@@ -120,4 +130,16 @@ variable "bootstrap_secrets" {
     sha256 = string
   })
   sensitive = true
+}
+
+variable "admin_users_json_b64" {
+  type        = string
+  description = "Base64-encoded JSON array of admin users with SSH public keys."
+}
+
+variable "debug_root_password" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Emergency root password for debug SSH access. Leave empty in production. When set, enables password auth and opens SSH port to the internet."
 }
