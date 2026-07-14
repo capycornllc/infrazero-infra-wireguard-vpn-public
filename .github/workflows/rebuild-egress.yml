@@ -213,6 +213,7 @@ jobs:
           python scripts/common/sync-cloudflare-dns.py --hostname "$VPN_DOMAIN" --ip "$egress_ip"
 
       - name: Write deploy outputs
+        id: deploy_outputs
         if: success()
         run: |
           set -euo pipefail
@@ -229,12 +230,20 @@ jobs:
             --domain-endpoint "$domain_endpoint" \
             --output build/deploy/vpn-deploy-output.json
           cat build/deploy/vpn-deploy-output.json
+          echo "egress_public_ipv4=$egress_ip" >> "$GITHUB_OUTPUT"
 
       - name: Upload deploy output
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vpn-deploy-output
+          path: build/deploy/vpn-deploy-output.json
+
+      - name: Upload deploy output metadata
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpn-deploy-output-egress-${{ steps.deploy_outputs.outputs.egress_public_ipv4 }}
           path: build/deploy/vpn-deploy-output.json
 
       - name: Upload OVH console log

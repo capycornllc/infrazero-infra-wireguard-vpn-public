@@ -67,6 +67,9 @@ Future scripts should keep responsibilities narrow:
 
 After `tofu apply`, the workflow writes a public artifact named
 `vpn-deploy-output` with `vpn-deploy-output.json`.
+It also uploads a metadata artifact named
+`vpn-deploy-output-egress-<egressPublicIpv4>` so the UI can resolve the public
+endpoint from GitHub artifact metadata without downloading logs.
 
 The artifact includes:
 
