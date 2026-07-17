@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+export INFRAZERO_PROVIDER="ovh"
+
 provider_route_mode() {
   echo "ovh-public"
 }

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+export INFRAZERO_PROVIDER="hetzner"
+
 provider_route_mode() {
   echo "none"
 }
@@ -10,4 +12,8 @@ provider_outbound_defaults() {
 
 provider_detect_public_iface() {
   ip route show default 2>/dev/null | awk '{print $5; exit}'
+}
+
+provider_admin_useradd_options() {
+  return 0
 }

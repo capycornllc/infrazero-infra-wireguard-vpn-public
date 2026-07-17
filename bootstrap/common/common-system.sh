@@ -22,13 +22,14 @@ fi
 source "${SCRIPT_DIR}/common-base.sh"
 infrazero_load_provider_adapter "$SCRIPT_DIR"
 infrazero_require_root
+infrazero_install_error_trap
 
 beacon_status "starting" "VPN server bootstrap starting" 0
 beacon_status "creating_admins" "Creating platform admin users" 10
 infrazero_setup_admin_users "vpn-common"
 
 beacon_status "installing_base_packages" "Installing base packages" 20
-infrazero_install_base_packages "vpn-common" curl ca-certificates zstd jq python3 sudo openssh-server
+infrazero_install_base_packages "vpn-common" curl ca-certificates zstd jq python3 sudo openssh-server auditd unattended-upgrades ufw
 
 beacon_status "hardening_ssh" "Applying SSH hardening" 35
 infrazero_harden_ssh "vpn-common"
@@ -36,4 +37,8 @@ infrazero_harden_ssh "vpn-common"
 beacon_status "system_baseline" "Applying system baseline" 45
 infrazero_apply_system_baseline
 
+beacon_status "base_security" "Enabling audit and security updates" 48
+infrazero_configure_base_system
+
 beacon_status "common_complete" "Common VPN bootstrap complete" 50
+trap - ERR

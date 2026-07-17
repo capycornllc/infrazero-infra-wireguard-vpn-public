@@ -65,7 +65,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Render VPN OpenTofu tfvars from GitHub Actions secrets.")
     parser.add_argument("--bootstrap-manifest", required=True)
     parser.add_argument("--bootstrap-secrets-manifest", required=True)
-    parser.add_argument("--output", default="tofu/hetzner/tofu.tfvars.json")
+    parser.add_argument(
+        "--output",
+        default=str(Path(os.getenv("TOFU_DIR", "tofu")) / "tofu.tfvars.json"),
+    )
     args = parser.parse_args()
 
     bootstrap_artifacts = json.loads(Path(args.bootstrap_manifest).read_text(encoding="utf-8-sig"))
@@ -75,7 +78,6 @@ def main() -> int:
     admin_listen_port = int(optional_env("VPN_ADMIN_WG_LISTEN_PORT", "51821"))
     project = require_env("VPN_PROJECT_SLUG")
     environment = optional_env("VPN_ENVIRONMENT", "prod")
-    cloud_provider = optional_env("VPN_CLOUD_PROVIDER", "hetzner")
     admin_ssh_keys = normalize_admin_ssh_keys()
     tfvars = {
         "project": project,
@@ -98,29 +100,6 @@ def main() -> int:
         "admin_users_json_b64": b64_json(admin_ssh_keys),
         "debug_root_password": optional_env("DEBUG_ROOT_PASSWORD"),
     }
-
-    if cloud_provider == "hetzner":
-        tfvars.update({
-            "hcloud_token": require_env("HCLOUD_TOKEN"),
-            "server_image": "ubuntu-22.04",
-        })
-    elif cloud_provider == "ovhcloud":
-        tfvars.update({
-            "private_cidr": optional_env("VPN_PRIVATE_CIDR", "10.80.0.0/24"),
-            "server_image_regex": optional_env("OVH_SERVER_IMAGE_REGEX", "^Ubuntu 24\\.04"),
-            "ovh_application_key": require_env("OVH_APPLICATION_KEY"),
-            "ovh_application_secret": require_env("OVH_APPLICATION_SECRET"),
-            "ovh_consumer_key": require_env("OVH_CONSUMER_KEY"),
-            "ovh_cloud_project_id": require_env("OVH_CLOUD_PROJECT_ID"),
-            "openstack_auth_url": optional_env("OPENSTACK_AUTH_URL", "https://auth.cloud.ovh.net/v3"),
-            "ovh_endpoint": optional_env("OVH_ENDPOINT", "ovh-eu"),
-            "openstack_user_name": require_env("OPENSTACK_USER_NAME"),
-            "openstack_password": require_env("OPENSTACK_PASSWORD"),
-            "ovh_ext_net_name": optional_env("OVH_EXT_NET_NAME", "Ext-Net"),
-        })
-    else:
-        print(f"Unsupported VPN_CLOUD_PROVIDER: {cloud_provider}", file=sys.stderr)
-        return 1
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

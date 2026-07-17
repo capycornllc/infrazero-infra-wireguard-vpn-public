@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Set this to the provider directory name.
+export INFRAZERO_PROVIDER="replace-me"
+
 provider_route_mode() {
   echo "none"
 }

@@ -13,17 +13,6 @@ jobs:
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
       INFRA_STATE_BUCKET: ${{ secrets.INFRA_STATE_BUCKET }}
-      HCLOUD_TOKEN: ${{ secrets.HETZNER_CLOUD_TOKEN }}
-      TF_VAR_hcloud_token: ${{ secrets.HETZNER_CLOUD_TOKEN }}
-      OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
-      OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
-      OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
-      OVH_CLOUD_PROJECT_ID: ${{ secrets.OVH_CLOUD_PROJECT_ID }}
-      OPENSTACK_USER_NAME: ${{ secrets.OPENSTACK_USER_NAME }}
-      OPENSTACK_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
-      OPENSTACK_AUTH_URL: ${{ secrets.OPENSTACK_AUTH_URL }}
-      OVH_ENDPOINT: ${{ secrets.OVH_ENDPOINT }}
-      OVH_EXT_NET_NAME: ${{ secrets.OVH_EXT_NET_NAME }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       VPN_PROJECT_SLUG: ${{ secrets.VPN_PROJECT_SLUG }}
       VPN_ENVIRONMENT: ${{ secrets.VPN_ENVIRONMENT }}
@@ -59,14 +48,22 @@ jobs:
       - name: Setup OpenTofu
         uses: opentofu/setup-opentofu@v1
 
+      - name: Select cloud provider
+        uses: ./.github/actions/select-provider
+
+      - name: Export selected provider credentials
+        run: |
+          python scripts/common/export-selected-provider-secrets.py \
+            --github-env "$GITHUB_ENV" \
+            --provider-credential-script "${SCRIPTS_DIR}/ci-credentials.sh" <<'JSON'
+          ${{ toJSON(secrets) }}
+          JSON
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          provider=$(echo "${VPN_CLOUD_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')
-          if [ "$provider" = "ovh" ] || [ "$provider" = "ovhcloud" ]; then
-            pip install python-openstackclient
-          fi
+          bash "${SCRIPTS_DIR}/ci-prepare.sh"
 
       - name: Normalize deploy environment
         run: |
@@ -78,27 +75,6 @@ jobs:
           if [ -z "${VPN_ENVIRONMENT:-}" ]; then
             echo "VPN_ENVIRONMENT=prod" >> "$GITHUB_ENV"
           fi
-          provider="${VPN_CLOUD_PROVIDER:-hetzner}"
-          provider=$(echo "$provider" | tr '[:upper:]' '[:lower:]')
-          case "$provider" in
-            hetzner)
-              echo "VPN_CLOUD_PROVIDER=hetzner" >> "$GITHUB_ENV"
-              echo "VPN_BOOTSTRAP_PROVIDER=hetzner" >> "$GITHUB_ENV"
-              echo "VPN_TOFU_DIR=tofu/hetzner" >> "$GITHUB_ENV"
-              echo "VPN_BOOTSTRAP_DIR=bootstrap/hetzner" >> "$GITHUB_ENV"
-              ;;
-            ovh|ovhcloud)
-              provider="ovhcloud"
-              echo "VPN_CLOUD_PROVIDER=ovhcloud" >> "$GITHUB_ENV"
-              echo "VPN_BOOTSTRAP_PROVIDER=ovh" >> "$GITHUB_ENV"
-              echo "VPN_TOFU_DIR=tofu/ovh" >> "$GITHUB_ENV"
-              echo "VPN_BOOTSTRAP_DIR=bootstrap/ovh" >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "Unsupported VPN_CLOUD_PROVIDER: $provider" >&2
-              exit 1
-              ;;
-          esac
           if [ -z "${VPN_CLOUD_REGION:-}" ]; then
             echo "VPN_CLOUD_REGION is required" >&2
             exit 1
@@ -112,48 +88,28 @@ jobs:
           fi
           echo "S3_ENDPOINT=${S3_ENDPOINT}" >> "$GITHUB_ENV"
 
-          s3_region="${S3_REGION:-${VPN_CLOUD_REGION}}"
+          s3_region="${PROVIDER_S3_REGION:-${S3_REGION:-${VPN_CLOUD_REGION}}}"
           if [ -z "$s3_region" ]; then
             echo "S3_REGION or VPN_CLOUD_REGION is required" >&2
             exit 1
           fi
-          if [ "$provider" = "ovhcloud" ]; then
-            # Match the app infra path: OVH S3 expects lowercase region without AZ suffix.
-            # Example: US-EAST-VA-1 -> us-east-va.
-            s3_region=$(echo "$s3_region" | tr '[:upper:]' '[:lower:]' | sed 's/-[0-9]*$//')
-          fi
           echo "S3_REGION=${s3_region}" >> "$GITHUB_ENV"
           echo "AWS_DEFAULT_REGION=${s3_region}" >> "$GITHUB_ENV"
 
-          if [ "$provider" = "ovhcloud" ]; then
-            region_lower=$(echo "${VPN_CLOUD_REGION}" | tr '[:upper:]' '[:lower:]')
-            if [ -z "${OPENSTACK_AUTH_URL:-}" ]; then
-              if [[ "$region_lower" == us-* ]]; then
-                echo "OPENSTACK_AUTH_URL=https://auth.cloud.ovh.us/v3" >> "$GITHUB_ENV"
-              else
-                echo "OPENSTACK_AUTH_URL=https://auth.cloud.ovh.net/v3" >> "$GITHUB_ENV"
-              fi
-            fi
-            if [ -z "${OVH_ENDPOINT:-}" ]; then
-              if [[ "$region_lower" == us-* ]]; then
-                echo "OVH_ENDPOINT=ovh-us" >> "$GITHUB_ENV"
-              else
-                echo "OVH_ENDPOINT=ovh-eu" >> "$GITHUB_ENV"
-              fi
-            fi
-          fi
+      - name: Validate VPN config
+        run: python scripts/common/validate-vpn-env.py
 
       - name: Render backend
-        run: python scripts/common/render-backend.py --output "$VPN_TOFU_DIR/backend.hcl"
+        run: python scripts/common/render-backend.py --output "$TOFU_DIR/backend.hcl"
 
       - name: Init OpenTofu
-        run: tofu -chdir="$VPN_TOFU_DIR" init -no-color -backend-config=backend.hcl
+        run: tofu -chdir="$TOFU_DIR" init -no-color -backend-config=backend.hcl
 
       - name: Package and upload egress bootstrap
         run: |
           set -euo pipefail
-          BOOTSTRAP_DIR="$VPN_BOOTSTRAP_DIR" \
-          BOOTSTRAP_PROVIDER="$VPN_BOOTSTRAP_PROVIDER" \
+          BOOTSTRAP_DIR="$BOOTSTRAP_DIR" \
+          BOOTSTRAP_PROVIDER="$BOOTSTRAP_PROVIDER" \
           BOOTSTRAP_PRESIGN_EXPIRY=3600 \
           bash scripts/common/package-bootstrap.sh --manifest build/bootstrap_artifacts.json egress-vpn
 
@@ -161,67 +117,41 @@ jobs:
         run: bash scripts/common/offload-vpn-bootstrap-secrets.sh build/bootstrap_secrets.json
 
       - name: Render OpenTofu tfvars
-        run: python scripts/common/render-vpn-tfvars.py --bootstrap-manifest build/bootstrap_artifacts.json --bootstrap-secrets-manifest build/bootstrap_secrets.json --output "$VPN_TOFU_DIR/tofu.tfvars.json"
+        run: python scripts/common/render-vpn-tfvars.py --bootstrap-manifest build/bootstrap_artifacts.json --bootstrap-secrets-manifest build/bootstrap_secrets.json --output "$TOFU_DIR/tofu.tfvars.json"
 
       - name: Destroy previous VPN egress
-        run: tofu -chdir="$VPN_TOFU_DIR" destroy -no-color -auto-approve -var-file=tofu.tfvars.json
+        run: bash scripts/common/tofu-retry.sh tofu -chdir="$TOFU_DIR" destroy -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
 
       - name: Apply VPN egress
-        run: tofu -chdir="$VPN_TOFU_DIR" apply -no-color -auto-approve -var-file=tofu.tfvars.json
+        run: bash scripts/common/tofu-retry.sh tofu -chdir="$TOFU_DIR" apply -no-color -auto-approve -parallelism=1 -var-file=tofu.tfvars.json
 
-      - name: Wait for OVH cloud-init
-        run: |
-          set -euo pipefail
-          if [ "${VPN_CLOUD_PROVIDER:-}" != "ovhcloud" ]; then
-            echo "Skipping OVH cloud-init wait for provider: ${VPN_CLOUD_PROVIDER:-hetzner}"
-            exit 0
-          fi
-          export OS_AUTH_URL="$OPENSTACK_AUTH_URL"
-          export OS_USERNAME="$OPENSTACK_USER_NAME"
-          export OS_PASSWORD="$OPENSTACK_PASSWORD"
-          export OS_PROJECT_ID="$OVH_CLOUD_PROJECT_ID"
-          export OS_REGION_NAME="$VPN_CLOUD_REGION"
-          export OS_INTERFACE=public
-          export OS_IDENTITY_API_VERSION=3
-          export OS_USER_DOMAIN_NAME=Default
-          export OS_PROJECT_DOMAIN_NAME=Default
-          mkdir -p build/deploy
-          server_id=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_server_id)
-          for attempt in $(seq 1 48); do
-            openstack console log show --lines 2000 "$server_id" > build/deploy/ovh-console.log 2>&1 || true
-            if grep -q "WireGuard VPN egress is configured" build/deploy/ovh-console.log; then
-              echo "OVH cloud-init finished and WireGuard was configured."
-              exit 0
-            fi
-            if grep -Eiq "(Traceback|Failed to start|Missing .+| is required|No such file|sha256sum: WARNING|cloud-init.*failed|curl: \\([0-9]+\\))" build/deploy/ovh-console.log; then
-              echo "OVH cloud-init reported an error:" >&2
-              tail -n 220 build/deploy/ovh-console.log >&2
-              exit 1
-            fi
-            echo "Waiting for OVH cloud-init marker ($attempt/48)..."
-            sleep 10
-          done
-          echo "OVH cloud-init did not report WireGuard readiness in time." >&2
-          tail -n 220 build/deploy/ovh-console.log >&2
-          exit 1
+      - name: Wait for server bootstrap
+        run: bash "${SCRIPTS_DIR}/wait-bootstrap.sh"
 
       - name: Sync Cloudflare DNS
         if: env.VPN_ENDPOINT_MODE == 'domain'
         run: |
           set -euo pipefail
-          egress_ip=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4)
+          egress_ip=$(tofu -chdir="$TOFU_DIR" output -no-color -raw egress_public_ipv4)
           python scripts/common/sync-cloudflare-dns.py --hostname "$VPN_DOMAIN" --ip "$egress_ip"
+
+      - name: Validate DNS record
+        if: env.VPN_ENDPOINT_MODE == 'domain'
+        run: |
+          set -euo pipefail
+          egress_ip=$(tofu -chdir="$TOFU_DIR" output -no-color -raw egress_public_ipv4)
+          python scripts/common/validate-dns-record.py --hostname "$VPN_DOMAIN" --ip "$egress_ip"
 
       - name: Write deploy outputs
         id: deploy_outputs
         if: success()
         run: |
           set -euo pipefail
-          egress_ip=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4)
-          public_ip_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_public_ip_endpoint)
-          wireguard_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_endpoint)
-          admin_wireguard_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw admin_wireguard_endpoint)
-          domain_endpoint=$(tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_domain_endpoint 2>/dev/null || true)
+          egress_ip=$(tofu -chdir="$TOFU_DIR" output -no-color -raw egress_public_ipv4)
+          public_ip_endpoint=$(tofu -chdir="$TOFU_DIR" output -no-color -raw wireguard_public_ip_endpoint)
+          wireguard_endpoint=$(tofu -chdir="$TOFU_DIR" output -no-color -raw wireguard_endpoint)
+          admin_wireguard_endpoint=$(tofu -chdir="$TOFU_DIR" output -no-color -raw admin_wireguard_endpoint)
+          domain_endpoint=$(tofu -chdir="$TOFU_DIR" output -no-color -raw wireguard_domain_endpoint 2>/dev/null || true)
           python scripts/common/render-deploy-output.py \
             --egress-public-ip "$egress_ip" \
             --public-ip-endpoint "$public_ip_endpoint" \
@@ -246,12 +176,12 @@ jobs:
           name: vpn-deploy-output-egress-${{ steps.deploy_outputs.outputs.egress_public_ipv4 }}
           path: build/deploy/vpn-deploy-output.json
 
-      - name: Upload OVH console log
+      - name: Upload provider console log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ovh-vpn-console-log
-          path: build/deploy/ovh-console.log
+          name: vpn-provider-console-log
+          path: build/deploy/provider-console.log
           if-no-files-found: ignore
 
       - name: Deployment summary
@@ -261,15 +191,15 @@ jobs:
             echo "## Infrazero WireGuard VPN"
             echo ""
             echo "- Cloud provider: \`${VPN_CLOUD_PROVIDER:-hetzner}\`"
-            if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then
+            if tofu -chdir="$TOFU_DIR" output -no-color -raw egress_public_ipv4 >/tmp/egress_ip 2>/dev/null; then
               ip=$(cat /tmp/egress_ip)
               echo "- Egress public IPv4: \`$ip\`"
             fi
-            if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw wireguard_endpoint >/tmp/wireguard_endpoint 2>/dev/null; then
+            if tofu -chdir="$TOFU_DIR" output -no-color -raw wireguard_endpoint >/tmp/wireguard_endpoint 2>/dev/null; then
               endpoint=$(cat /tmp/wireguard_endpoint)
               echo "- WireGuard endpoint: \`$endpoint\`"
             fi
-            if tofu -chdir="$VPN_TOFU_DIR" output -no-color -raw admin_wireguard_endpoint >/tmp/admin_wireguard_endpoint 2>/dev/null; then
+            if tofu -chdir="$TOFU_DIR" output -no-color -raw admin_wireguard_endpoint >/tmp/admin_wireguard_endpoint 2>/dev/null; then
               admin_endpoint=$(cat /tmp/admin_wireguard_endpoint)
               echo "- Admin WireGuard endpoint: \`$admin_endpoint\`"
             fi

@@ -155,6 +155,20 @@ EOF
 render_peers "ADMIN_PEERS_JSON" "admin-peer" >> /etc/wireguard/wg-admin.conf
 chmod 600 /etc/wireguard/wg-admin.conf
 
+beacon_status "configuring_firewall" "Restricting public access and enabling VPN forwarding" 82
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw default deny routed
+ufw allow "${WG_LISTEN_PORT}/udp"
+ufw allow "${VPN_ADMIN_WG_LISTEN_PORT}/udp"
+ufw allow in on wg-admin to any port 22 proto tcp
+ufw route allow in on wg0 out on "$WAN_IF"
+if [ -n "${DEBUG_ROOT_PASSWORD:-}" ]; then
+  ufw allow 22/tcp
+fi
+ufw --force enable
+
 beacon_status "starting_wireguard" "Starting WireGuard services" 84
 systemctl enable wg-quick@wg0
 systemctl restart wg-quick@wg0
@@ -251,6 +265,11 @@ if iptables -t nat -S POSTROUTING 2>/dev/null | grep -q MASQUERADE; then
 else
   line error "NAT masquerade rule missing"
 fi
+if ufw status 2>/dev/null | grep -q "Status: active"; then
+  line ready "UFW firewall active"
+else
+  line error "UFW firewall inactive"
+fi
 echo
 echo "-- wireguard --"
 for iface in wg0 wg-admin; do
@@ -264,6 +283,7 @@ ss -lntup 2>/dev/null | grep -E '(:22|:51820|:51821)' || true
 echo
 echo "-- firewall nat --"
 iptables -t nat -S 2>/dev/null | grep -E 'POSTROUTING|MASQUERADE' || true
+ufw status verbose 2>/dev/null || true
 echo
 echo "-- services --"
 systemctl --no-pager --full status wg-quick@wg0 2>/dev/null || true

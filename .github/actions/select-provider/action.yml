@@ -1,0 +1,9 @@
+name: Select VPN cloud provider
+description: Resolve provider directories by convention and validate the VPN contract.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve VPN provider
+      shell: bash
+      run: bash scripts/common/select-provider.sh

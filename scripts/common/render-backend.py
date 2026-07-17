@@ -7,7 +7,10 @@ from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render OpenTofu S3 backend config for VPN infra.")
-    parser.add_argument("--output", default="tofu/hetzner/backend.hcl")
+    parser.add_argument(
+        "--output",
+        default=str(Path(os.getenv("TOFU_DIR", "tofu")) / "backend.hcl"),
+    )
     args = parser.parse_args()
 
     bucket = os.getenv("INFRA_STATE_BUCKET", "").strip()

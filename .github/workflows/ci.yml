@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  syntax-and-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Shell syntax
+        run: |
+          rc=0
+          while IFS= read -r file; do
+            bash -n "$file" || { echo "syntax error: $file"; rc=1; }
+          done < <(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+          exit "$rc"
+      - name: Shellcheck errors
+        run: shellcheck -S error $(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+      - name: Python syntax
+        run: python -m compileall -q scripts
+      - name: Canonical Tofu files match provider copies
+        run: bash scripts/common/sync-tofu-common.sh --check
+      - name: Shared bootstrap stays provider-neutral
+        run: |
+          if git grep -nEi '\b(hcloud|openstack|ovhcloud)\b' -- bootstrap/common; then
+            echo "::error::provider-specific token leaked into bootstrap/common"
+            exit 1
+          fi
+      - name: Shared workflows do not bind cloud credentials
+        run: |
+          while IFS= read -r script; do
+            bash "$script" --list-secret-names
+          done < <(find scripts -mindepth 2 -maxdepth 2 -type f -name ci-credentials.sh | sort) \
+            | python scripts/common/check-workflow-provider-isolation.py --github-dir .github
+
+  provider-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      clouds: ${{ steps.discover.outputs.clouds }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: discover
+        run: |
+          mapfile -t clouds < <(
+            find scripts -mindepth 2 -maxdepth 2 -type f -name ci-credentials.sh -printf '%h\n' \
+              | sed 's#^scripts/##' | sort -u
+          )
+          source scripts/common/provider-contract.sh
+          for cloud in "${clouds[@]}"; do
+            infrazero_validate_provider_contract "$PWD" "$cloud"
+          done
+          json=$(printf '%s\n' "${clouds[@]}" | jq -R . | jq -sc .)
+          echo "clouds=${json}" >> "$GITHUB_OUTPUT"
+
+  provider-contract:
+    needs: provider-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.provider-matrix.outputs.clouds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Adapter and selector contracts
+        run: |
+          bash scripts/common/test-provider-adapter.sh "${{ matrix.cloud }}"
+          bash scripts/common/test-provider-selection.sh "${{ matrix.cloud }}"
+      - name: Materialize selected cloud only
+        run: bash scripts/common/materialize-user-repo.sh "${{ matrix.cloud }}" "${RUNNER_TEMP}/mat"
+      - name: Dry-package VPN bootstrap
+        working-directory: ${{ runner.temp }}/mat
+        run: |
+          BOOTSTRAP_DIR="bootstrap/${{ matrix.cloud }}" \
+          BOOTSTRAP_PROVIDER="${{ matrix.cloud }}" \
+          BOOTSTRAP_OUTPUT_DIR="${RUNNER_TEMP}/pkg" \
+          PACKAGE_BOOTSTRAP_SKIP_UPLOAD=true \
+          PACKAGE_BOOTSTRAP_COMPRESSION=none \
+          bash scripts/common/package-bootstrap.sh \
+            --manifest "${RUNNER_TEMP}/pkg/manifest.json" egress-vpn
+
+  tofu-validate:
+    needs: provider-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.provider-matrix.outputs.clouds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.10.6"
+      - name: Validate OpenTofu
+        working-directory: tofu/${{ matrix.cloud }}
+        run: |
+          tofu init -backend=false -input=false -no-color
+          tofu validate -no-color

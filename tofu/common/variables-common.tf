@@ -1,7 +1,7 @@
-variable "hcloud_token" {
-  type      = string
-  sensitive = true
-}
+# Common variable declarations shared by ALL VPN provider roots.
+# CANONICAL SOURCE: tofu/common/variables-common.tf
+# Copies in tofu/<provider>/ are generated - do not edit them directly;
+# run scripts/common/sync-tofu-common.sh after changing the canonical file.
 
 variable "project" {
   type = string
@@ -16,10 +16,6 @@ variable "name_prefix" {
 }
 
 variable "location" {
-  type = string
-}
-
-variable "server_image" {
   type = string
 }
 

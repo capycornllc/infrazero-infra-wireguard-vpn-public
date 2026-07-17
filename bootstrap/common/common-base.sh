@@ -36,6 +36,30 @@ infrazero_retry() {
   done
 }
 
+infrazero_apt_get() {
+  local log_prefix="${1:-common}"
+  shift || true
+  local attempts="${INFRAZERO_APT_ATTEMPTS:-5}"
+  local retry_delay="${INFRAZERO_APT_RETRY_DELAY:-10}"
+  local command_timeout="${INFRAZERO_APT_TIMEOUT:-1200}"
+  local lock_timeout="${INFRAZERO_APT_LOCK_TIMEOUT:-600}"
+  local attempt
+
+  for attempt in $(seq 1 "$attempts"); do
+    if timeout "$command_timeout" apt-get -o DPkg::Lock::Timeout="$lock_timeout" "$@"; then
+      return 0
+    fi
+    echo "[${log_prefix}] apt-get $* failed (${attempt}/${attempts}); retrying in ${retry_delay}s" >&2
+    if declare -F beacon_retrying >/dev/null 2>&1; then
+      beacon_retrying "installing_base_packages" "apt-get failed or timed out; retrying" 20 "external" "APT_RETRY" "$attempt" "$attempts"
+    fi
+    apt-get clean 2>/dev/null || true
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+    sleep "$retry_delay"
+  done
+  return 1
+}
+
 provider_route_mode() {
   echo "none"
 }
@@ -80,8 +104,8 @@ infrazero_install_base_packages() {
     return 0
   fi
 
-  INFRAZERO_LOG_PREFIX="$log_prefix" infrazero_retry 5 apt-get update -y
-  INFRAZERO_LOG_PREFIX="$log_prefix" infrazero_retry 5 apt-get install -y "${packages[@]}"
+  infrazero_apt_get "$log_prefix" update -y
+  infrazero_apt_get "$log_prefix" install -y "${packages[@]}"
 }
 
 infrazero_setup_admin_users() {
@@ -201,6 +225,21 @@ infrazero_ensure_sshd_include() {
   fi
 }
 
+infrazero_strip_sshd_debug_block() {
+  local sshd_config="${1:-/etc/ssh/sshd_config}"
+  local begin="# BEGIN INFRAZERO DEBUG SSH"
+  local end="# END INFRAZERO DEBUG SSH"
+
+  if [ -f "$sshd_config" ]; then
+    awk -v begin="$begin" -v end="$end" '
+      $0==begin {skip=1; next}
+      $0==end {skip=0; next}
+      skip==1 {next}
+      {print}
+    ' "$sshd_config" > "${sshd_config}.tmp" && mv "${sshd_config}.tmp" "$sshd_config"
+  fi
+}
+
 infrazero_harden_ssh() {
   local log_prefix="${1:-common}"
   local sshd_config="${SSHD_CONFIG:-/etc/ssh/sshd_config}"
@@ -229,8 +268,10 @@ infrazero_harden_ssh() {
   infrazero_set_sshd_config "$sshd_config" "KbdInteractiveAuthentication" "$ssh_kbd_interactive"
   infrazero_set_sshd_config "$sshd_config" "ChallengeResponseAuthentication" "$ssh_challenge"
   infrazero_set_sshd_config "$sshd_config" "PermitRootLogin" "$ssh_permit_root"
+  infrazero_strip_sshd_debug_block "$sshd_config"
 
   mkdir -p /etc/ssh/sshd_config.d
+  rm -f /etc/ssh/sshd_config.d/infrazero.conf
   cat > /etc/ssh/sshd_config.d/90-infrazero.conf <<EOF
 PasswordAuthentication ${ssh_password_auth}
 KbdInteractiveAuthentication ${ssh_kbd_interactive}
@@ -273,4 +314,29 @@ EOF
 infrazero_ipv4_from_cidr() {
   local cidr="$1"
   printf '%s' "${cidr%%/*}"
+}
+
+infrazero_configure_base_system() {
+  if command -v unattended-upgrades >/dev/null 2>&1; then
+    cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+};
+Unattended-Upgrade::Package-Blacklist {
+        "linux-*";
+        "libc6";
+        "openssl";
+        "wireguard*";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+EOF
+    systemctl enable unattended-upgrades >/dev/null 2>&1 || true
+  fi
+
+  systemctl enable --now auditd >/dev/null 2>&1 || true
+  mkdir -p /var/log/journal
+  sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
 }
